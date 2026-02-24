@@ -1,0 +1,41 @@
+[2026-02-25 01:53:07,552 - INFO] - __main__ - Keep-alive server started.
+[2026-02-25 01:53:08,403 - ERROR] - __main__ - Critical Startup Error: The API key is required for new authorizations. More info: https://pyrofork.mayuri.my.id/main/start/auth
+[2026-02-25 01:53:08,892 - WARNING] - werkzeug -  * Running on all addresses.
+   WARNING: This is a development server. Do not use it in a production deployment.
+[2026-02-25 01:53:08,892 - INFO] - werkzeug -  * Running on http://10.237.163.57:8080/ (Press CTRL+C to quit)
+[2026-02-25 01:53:23,435 - ERROR] - __main__ - Critical Startup Error: The API key is required for new authorizations. More info: https://pyrofork.mayuri.my.id/main/start/auth
+[2026-02-25 01:53:33,503 - INFO] - werkzeug - 10.237.163.57 - - [25/Feb/2026 01:53:33] "GET / HTTP/1.1" 200 -
+[2026-02-25 01:53:33,622 - INFO] - werkzeug - 10.237.163.57 - - [25/Feb/2026 01:53:33] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+[2026-02-25 01:53:38,473 - ERROR] - __main__ - Critical Startup Error: The API key is required for new authorizations. More info: https://pyrofork.mayuri.my.id/main/start/auth
+[2026-02-25 01:53:53,499 - ERROR] - __main__ - Critical Startup Error: The API key is required for new authorizations. More info: https://pyrofork.mayuri.my.id/main/start/auth
+[2026-02-25 01:54:08,533 - ERROR] - __main__ - Critical Startup Error: The API key is required for new authorizations. More info: https://pyrofork.mayuri.my.id/main/start/auth
+[2026-02-25 01:54:23,570 - ERROR] - __main__ - Critical Startup Error: The API key is required for new authorizations. More info: https://pyrofork.mayuri.my.id/main/start/auth
+[2026-02-25 01:54:38,591 - ERROR] - __main__ - Critical Startup Error: The API key is required for new authorizations. More info: https://pyrofork.mayuri.my.id/main/start/auth
+[2026-02-25 01:54:53,609 - ERROR] - __main__ - Critical Startup Error: The API key is required for new authorizations. More info: https://pyrofork.mayuri.my.id/main/start/auth
+[2026-02-25 02:01:48,732 - INFO] - __main__ - Keep-alive server started.
+[2026-02-25 02:01:50,016 - WARNING] - werkzeug -  * Running on all addresses.
+   WARNING: This is a development server. Do not use it in a production deployment.
+[2026-02-25 02:01:50,016 - INFO] - werkzeug -  * Running on http://10.237.163.57:8080/ (Press CTRL+C to quit)
+[2026-02-25 02:01:55,804 - INFO] - __main__ - MongoDB Connected: 3 users found.
+[2026-02-25 02:01:56,058 - INFO] - __main__ - Startup log sent.
+[2026-02-25 02:03:59,393 - INFO] - root - Stop signal received (SIGINT). Exiting...
+[2026-02-25 02:03:59,558 - INFO] - __main__ - Bot stopped cleanly
+[2026-02-25 02:18:41,373 - INFO] - __main__ - Keep-alive server started.
+[2026-02-25 02:18:42,660 - WARNING] - werkzeug -  * Running on all addresses.
+   WARNING: This is a development server. Do not use it in a production deployment.
+[2026-02-25 02:18:42,660 - INFO] - werkzeug -  * Running on http://10.237.163.57:8080/ (Press CTRL+C to quit)
+[2026-02-25 02:18:44,178 - INFO] - __main__ - MongoDB Connected: 3 users found.
+[2026-02-25 02:18:44,334 - INFO] - __main__ - Startup log sent.
+[2026-02-25 02:28:43,892 - INFO] - root - Stop signal received (SIGINT). Exiting...
+[2026-02-25 02:28:44,100 - INFO] - __main__ - Bot stopped cleanly
+[2026-02-25 02:28:44,578 - INFO] - root - Stop signal received (SIGINT). Exiting...
+[2026-02-25 02:28:49,641 - INFO] - __main__ - Keep-alive server started.
+[2026-02-25 02:28:50,926 - WARNING] - werkzeug -  * Running on all addresses.
+   WARNING: This is a development server. Do not use it in a production deployment.
+[2026-02-25 02:28:50,927 - INFO] - werkzeug -  * Running on http://10.237.163.57:8080/ (Press CTRL+C to quit)
+[2026-02-25 02:28:52,491 - INFO] - __main__ - MongoDB Connected: 3 users found.
+[2026-02-25 02:28:52,639 - INFO] - __main__ - Startup log sent.
+[2026-02-25 02:30:40,723 - INFO] - root - Stop signal received (SIGINT). Exiting...
+[2026-02-25 02:30:40,908 - INFO] - __main__ - Bot stopped cleanly
+[2026-02-25 02:30:41,383 - INFO] - root - Stop signal received (SIGINT). Exiting...
+[2026-02-25 02:30:41,384 - INFO] - root - Stop signal received (SIGINT). Exiting...

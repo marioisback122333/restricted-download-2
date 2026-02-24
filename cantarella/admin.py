@@ -1,0 +1,63 @@
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from database.db import db
+from config import ADMINS
+
+@Client.on_message(filters.command("ban") & filters.user(ADMINS))
+async def ban(client: Client, message: Message):
+    if len(message.command) < 2:
+        return await message.reply_text("**Usage:** `/ban user_id`")
+    try:
+        user_id = int(message.command[1])
+        await db.ban_user(user_id)
+        await message.reply_text(f"**User {user_id} Banned Successfully 🚫**")
+    except Exception as e:
+        await message.reply_text(f"Error banning user: {e}")
+
+@Client.on_message(filters.command("unban") & filters.user(ADMINS))
+async def unban(client: Client, message: Message):
+    if len(message.command) < 2:
+        return await message.reply_text("**Usage:** `/unban user_id`")
+    try:
+        user_id = int(message.command[1])
+        await db.unban_user(user_id)
+        await message.reply_text(f"**User {user_id} Unbanned Successfully ✅**")
+    except Exception as e:
+        await message.reply_text(f"Error unbanning user: {e}")
+
+@Client.on_message(filters.command("set_dump") & filters.user(ADMINS))
+async def set_dump(client: Client, message: Message):
+    if len(message.command) < 3:
+        return await message.reply_text("**Usage:** `/set_dump user_id chat_id`")
+    try:
+        user_id = int(message.command[1])
+        chat_id = int(message.command[2])
+        await db.set_dump_chat(user_id, chat_id)
+        await message.reply_text(f"**Dump chat set for user {user_id}.**")
+    except Exception as e:
+        await message.reply_text(f"Error setting dump chat: {e}")
+
+
+# ======================================================
+# /lockall & /unlock — Admin-only bot lockdown
+# ======================================================
+
+@Client.on_message(filters.command("lockall") & filters.user(ADMINS))
+async def lockall(client: Client, message: Message):
+    import state
+    if state.BOT_LOCKED:
+        return await message.reply_text("🔒 **Bot is already locked.**")
+    state.BOT_LOCKED = True
+    await message.reply_text(
+        "🔒 **Bot Locked Successfully**\n\n"
+        "Bot is now in admin mode.\n"
+        "Use `/unlock` to restore access for all users."
+    )
+
+@Client.on_message(filters.command("unlock") & filters.user(ADMINS))
+async def unlock(client: Client, message: Message):
+    import state
+    if not state.BOT_LOCKED:
+        return await message.reply_text("🔓 **Bot is already unlocked.**")
+    state.BOT_LOCKED = False
+    await message.reply_text("🔓 **Bot Unlocked Successfully**\n\nAll users can now use the bot.")
