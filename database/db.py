@@ -101,8 +101,8 @@ class Database:
     async def check_premium(self, id):
         user = await self.col.find_one({'id': int(id)})
         if user and user.get('is_premium'):
-            return user.get('premium_expiry')
-        return None
+            return True
+        return False
 
     async def get_premium_users(self):
         return self.col.find({'is_premium': True})
