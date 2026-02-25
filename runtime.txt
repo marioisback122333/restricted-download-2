@@ -1,5 +1,1 @@
-<<<<<<< HEAD
 python-3.12.9
-=======
-python-3.12.9
->>>>>>> 4de6108 (Support Guys)
