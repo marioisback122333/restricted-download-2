@@ -3,6 +3,7 @@ import asyncio
 import random
 import time
 import shutil
+import subprocess
 import pyrogram
 from pyrogram import Client, filters, enums
 from pyrogram.errors import (
@@ -405,6 +406,7 @@ async def save(client: Client, message: Message):
                         max_concurrent_transmissions=10
                     )
                     await acc.connect()
+                    acc.me = await acc.get_me()
                 except Exception as e:
                     batch_temp.IS_BATCH[message.from_user.id] = True
                     return await message.reply(f"<b>❌ Authentication Failed</b>\n\n<i>Your session may have expired. Please /logout and /login again.</i>\n<i>Error: {e}</i>", parse_mode=enums.ParseMode.HTML)
@@ -553,31 +555,34 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
             if msg.caption:
                 final_caption = msg.caption
 
-        # Choose uploader: bot can only upload up to 2000 MiB
-        # For larger files, use user session (supports up to 4 GB)
+        # Smart upload: bot limit is 2000 MiB, user session limit depends on TG Premium
         BOT_UPLOAD_LIMIT = 2000 * 1024 * 1024  # 2000 MiB
-        if file_size > BOT_UPLOAD_LIMIT:
-            uploader = acc
-            logger.info(f"File {humanbytes(file_size)} exceeds bot limit, uploading via user session")
-        else:
-            uploader = client
+        upload_success = False
 
-        if msg_type == "Document":
-            await uploader.send_document(dest_chat, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
-        elif msg_type == "Video":
-            await uploader.send_video(dest_chat, file, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
-        elif msg_type == "Audio":
-            await uploader.send_audio(dest_chat, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
-        elif msg_type == "Photo":
-            await uploader.send_photo(dest_chat, file, caption=final_caption)
-        elif msg_type == "Animation":
-            await uploader.send_animation(dest_chat, file, caption=final_caption)
-        elif msg_type == "Voice":
-            await uploader.send_voice(dest_chat, file, caption=final_caption)
-        elif msg_type == "VideoNote":
-            await uploader.send_video_note(dest_chat, file)
-        elif msg_type == "Sticker":
-            await uploader.send_sticker(dest_chat, file)
+        if file_size <= BOT_UPLOAD_LIMIT:
+            # Small file — bot can handle it directly
+            await _do_upload(client, dest_chat, file, msg, msg_type, ph_path, final_caption, message)
+            upload_success = True
+        else:
+            # Large file — try user session first (works if user has TG Premium)
+            try:
+                logger.info(f"File {humanbytes(file_size)} exceeds bot limit, trying user session upload")
+                await _do_upload(acc, dest_chat, file, msg, msg_type, ph_path, final_caption, message)
+                upload_success = True
+            except Exception as upload_err:
+                err_str = str(upload_err)
+                logger.warning(f"User session upload failed: {err_str}")
+                # If user session also can't handle it, split the file
+                if "2000" in err_str or "bigger" in err_str.lower() or "premium" in err_str.lower():
+                    await smsg.edit("<b>📦 File too large for single upload. Splitting into parts...</b>")
+                    try:
+                        await _split_and_upload(client, dest_chat, file, file_size, final_caption, message, temp_dir)
+                        upload_success = True
+                    except Exception as split_err:
+                        logger.error(f"Split upload failed: {split_err}")
+                        raise split_err
+                else:
+                    raise upload_err
        
     except Exception as e:
         logger.error(f"Upload failed to {dest_chat}: {e}")
@@ -589,6 +594,127 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
         await smsg.delete()
     except Exception:
         pass
+
+
+async def _do_upload(uploader, dest_chat, file, msg, msg_type, ph_path, caption, message):
+    """Upload a file using the given client (bot or user session)."""
+    if msg_type == "Document":
+        await uploader.send_document(dest_chat, file, thumb=ph_path, caption=caption, progress=progress, progress_args=[message, "up"])
+    elif msg_type == "Video":
+        await uploader.send_video(dest_chat, file, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=caption, progress=progress, progress_args=[message, "up"])
+    elif msg_type == "Audio":
+        await uploader.send_audio(dest_chat, file, thumb=ph_path, caption=caption, progress=progress, progress_args=[message, "up"])
+    elif msg_type == "Photo":
+        await uploader.send_photo(dest_chat, file, caption=caption)
+    elif msg_type == "Animation":
+        await uploader.send_animation(dest_chat, file, caption=caption)
+    elif msg_type == "Voice":
+        await uploader.send_voice(dest_chat, file, caption=caption)
+    elif msg_type == "VideoNote":
+        await uploader.send_video_note(dest_chat, file)
+    elif msg_type == "Sticker":
+        await uploader.send_sticker(dest_chat, file)
+
+
+async def _split_and_upload(client, dest_chat, file_path, file_size, caption, message, temp_dir):
+    """Split a large file into <=1.95GB parts and upload each as a document."""
+    PART_SIZE = 1950 * 1024 * 1024  # 1950 MiB per part (safe margin under 2000)
+    filename = os.path.basename(file_path)
+    name, ext = os.path.splitext(filename)
+    
+    # Try ffmpeg split for videos first (produces playable parts)
+    if ext.lower() in ('.mp4', '.mkv', '.avi', '.mov', '.webm'):
+        try:
+            parts = await _ffmpeg_split(file_path, temp_dir, PART_SIZE)
+            if parts:
+                total = len(parts)
+                for i, part_path in enumerate(parts, 1):
+                    part_caption = f"{caption}\n\n📦 <b>Part {i}/{total}</b>" if caption else f"📦 <b>Part {i}/{total}</b>"
+                    await client.send_video(
+                        dest_chat, part_path,
+                        caption=part_caption,
+                        progress=progress, progress_args=[message, "up"]
+                    )
+                    await asyncio.sleep(1)
+                return
+        except Exception as e:
+            logger.warning(f"ffmpeg split failed, falling back to binary split: {e}")
+
+    # Binary split fallback (works for any file type)
+    part_num = 0
+    total_parts = math.ceil(file_size / PART_SIZE)
+    
+    with open(file_path, 'rb') as f:
+        while True:
+            chunk = f.read(PART_SIZE)
+            if not chunk:
+                break
+            part_num += 1
+            part_filename = f"{name}.part{part_num}of{total_parts}{ext}"
+            part_path = os.path.join(temp_dir, part_filename)
+            
+            with open(part_path, 'wb') as pf:
+                pf.write(chunk)
+            
+            part_caption = f"{caption}\n\n📦 <b>Part {part_num}/{total_parts}</b>" if caption else f"📦 <b>Part {part_num}/{total_parts}</b>"
+            await client.send_document(
+                dest_chat, part_path,
+                caption=part_caption,
+                progress=progress, progress_args=[message, "up"]
+            )
+            # Clean up part immediately to save disk
+            os.remove(part_path)
+            await asyncio.sleep(1)
+
+
+async def _ffmpeg_split(file_path, temp_dir, part_size):
+    """Try to split a video into parts using ffmpeg (if available)."""
+    # Check if ffmpeg is available
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    
+    filename = os.path.basename(file_path)
+    name, ext = os.path.splitext(filename)
+    
+    # Get video duration
+    result = subprocess.run(
+        ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+         '-of', 'default=noprint_wrappers=1:nokey=1', file_path],
+        capture_output=True, text=True
+    )
+    total_duration = float(result.stdout.strip())
+    total_size = os.path.getsize(file_path)
+    
+    # Calculate segment duration based on target part size
+    num_parts = math.ceil(total_size / part_size)
+    segment_duration = int(total_duration / num_parts)
+    if segment_duration < 10:
+        return None  # Too many parts, fall back to binary
+    
+    # Split using ffmpeg segment muxer
+    output_pattern = os.path.join(temp_dir, f"{name}_part%03d{ext}")
+    proc = await asyncio.create_subprocess_exec(
+        'ffmpeg', '-i', file_path,
+        '-c', 'copy', '-map', '0',
+        '-segment_time', str(segment_duration),
+        '-f', 'segment', '-reset_timestamps', '1',
+        output_pattern,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    await proc.wait()
+    
+    if proc.returncode != 0:
+        return None
+    
+    # Collect output files
+    parts = sorted([
+        os.path.join(temp_dir, f) for f in os.listdir(temp_dir)
+        if f.startswith(f"{name}_part") and f.endswith(ext)
+    ])
+    return parts if parts else None
 
 
 @Client.on_callback_query()
