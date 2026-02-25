@@ -127,13 +127,21 @@ async def settings_callbacks(client: Client, callback_query: CallbackQuery):
         await callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(back_close), parse_mode=enums.ParseMode.HTML)
     elif data == "thumb_btn":
         thumb = await db.get_thumbnail(user_id)
-        if thumb and os.path.exists(thumb):
-            await callback_query.message.reply_photo(
-                thumb,
-                caption="<b>🖼 Your Current Custom Thumbnail</b>\n\n<i>Send a new photo to update • /del_thumb to remove</i>",
-                parse_mode=enums.ParseMode.HTML
-            )
-            await callback_query.answer("Thumbnail preview sent below 👇")
+        if thumb:
+            try:
+                await callback_query.message.reply_photo(
+                    thumb,
+                    caption="<b>🖼 Your Current Custom Thumbnail</b>\n\n<i>Send a new photo to update • /del_thumb to remove</i>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                await callback_query.answer("Thumbnail preview sent below 👇")
+            except Exception:
+                await callback_query.edit_message_text(
+                    "<b>🖼 Thumbnail Error</b>\n\n"
+                    "<i>Saved thumbnail is invalid. Please set a new one with /set_thumb.</i>",
+                    reply_markup=InlineKeyboardMarkup(back_close),
+                    parse_mode=enums.ParseMode.HTML
+                )
         else:
             await callback_query.edit_message_text(
                 "<b>🖼 No Custom Thumbnail Set</b>\n\n"

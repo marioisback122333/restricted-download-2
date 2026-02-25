@@ -150,7 +150,7 @@ async def lockdown_guard(bot: Client, message: Message):
             "<i>Please contact the admin for more information.</i>",
             parse_mode=enums.ParseMode.HTML
         )
-        message.stop_propagation()
+        await message.stop_propagation()
 
 @BotInstance.on_message(filters.private & filters.incoming, group=-1)
 async def new_user_log(bot: Client, message: Message):

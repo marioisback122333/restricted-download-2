@@ -135,6 +135,10 @@ def get_message_type(msg):
     if getattr(msg, 'video', None): return "Video"
     if getattr(msg, 'photo', None): return "Photo"
     if getattr(msg, 'audio', None): return "Audio"
+    if getattr(msg, 'animation', None): return "Animation"
+    if getattr(msg, 'sticker', None): return "Sticker"
+    if getattr(msg, 'voice', None): return "Voice"
+    if getattr(msg, 'video_note', None): return "VideoNote"
     if getattr(msg, 'text', None): return "Text"
     return None
 
@@ -323,6 +327,20 @@ async def save(client: Client, message: Message):
         dump_chat = await db.get_dump_chat(message.from_user.id)
         dest_chat = dump_chat if dump_chat else message.chat.id
 
+        # Validate dump chat is reachable by the bot
+        if dump_chat:
+            try:
+                await client.get_chat(dump_chat)
+            except Exception as e:
+                logger.warning(f"Dump chat {dump_chat} unreachable for user {message.from_user.id}: {e}")
+                await message.reply(
+                    f"<b>⚠️ Dump chat <code>{dump_chat}</code> is unreachable.</b>\n"
+                    "<i>Make sure the bot is a member/admin of that chat.</i>\n"
+                    "<i>Falling back to this chat for now.</i>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                dest_chat = message.chat.id
+
         if batch_temp.IS_BATCH.get(message.from_user.id) == False:
             return await message.reply_text("<b>⚠️ A Task is Currently Processing.</b>\n<i>Please wait for completion or use /cancel to stop.</i>", parse_mode=enums.ParseMode.HTML)
         datas = message.text.split("/")
@@ -339,6 +357,10 @@ async def save(client: Client, message: Message):
 
         # Log what we're doing
         logger.info(f"User {message.from_user.id}: Processing link | type={'public' if is_public_link else 'private'} | dest={dest_chat} | msgs={fromID}-{toID}")
+
+        # Pre-connect user session ONCE (if needed for private/restricted content)
+        acc = None
+        needs_session = not is_public_link  # Private links always need session
 
         for msgid in range(fromID, toID + 1):
            
@@ -358,30 +380,40 @@ async def save(client: Client, message: Message):
                     continue
                 except Exception as e:
                     logger.error(f"copy_message failed for {username}/{msgid} -> {dest_chat}: {e}")
+                    needs_session = True
                     # Fall through to try with user session
-            user_data = await db.get_session(message.from_user.id)
-            if user_data is None:
-                await message.reply(
-                    "<b>🔒 Authentication Required</b>\n\n"
-                    "<i>Access to this content requires login.</i>\n"
-                    "<i>Use /login to securely authorize your account.</i>",
-                    parse_mode=enums.ParseMode.HTML
-                )
-                batch_temp.IS_BATCH[message.from_user.id] = True
-                return
-            try:
-                acc = Client(
-                    "saverestricted",
-                    session_string=user_data,
-                    api_hash=API_HASH,
-                    api_id=API_ID,
-                    in_memory=True,
-                    max_concurrent_transmissions=10
-                )
-                await acc.connect()
-            except Exception as e:
-                batch_temp.IS_BATCH[message.from_user.id] = True
-                return await message.reply(f"<b>❌ Authentication Failed</b>\n\n<i>Your session may have expired. Please /logout and /login again.</i>\n<i>Error: {e}</i>", parse_mode=enums.ParseMode.HTML)
+
+            # Connect user session once (lazy — only when first needed)
+            if acc is None and needs_session:
+                user_data = await db.get_session(message.from_user.id)
+                if user_data is None:
+                    await message.reply(
+                        "<b>🔒 Authentication Required</b>\n\n"
+                        "<i>Access to this content requires login.</i>\n"
+                        "<i>Use /login to securely authorize your account.</i>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    batch_temp.IS_BATCH[message.from_user.id] = True
+                    return
+                try:
+                    acc = Client(
+                        "saverestricted",
+                        session_string=user_data,
+                        api_hash=API_HASH,
+                        api_id=API_ID,
+                        in_memory=True,
+                        max_concurrent_transmissions=10
+                    )
+                    await acc.connect()
+                except Exception as e:
+                    batch_temp.IS_BATCH[message.from_user.id] = True
+                    return await message.reply(f"<b>❌ Authentication Failed</b>\n\n<i>Your session may have expired. Please /logout and /login again.</i>\n<i>Error: {e}</i>", parse_mode=enums.ParseMode.HTML)
+
+            if acc is None:
+                # No session and public copy failed — skip this message
+                await message.reply(f"<b>⚠️ Could not process message {msgid}.</b>\n<i>Try /login for restricted content.</i>", parse_mode=enums.ParseMode.HTML)
+                continue
+
             try:
                 if is_private_link:
                     chatid = int("-100" + datas[4])
@@ -392,17 +424,28 @@ async def save(client: Client, message: Message):
                 else:
                     username = datas[3]
                     await handle_restricted_content(client, acc, message, username, msgid, dest_chat)
-            finally:
-                # Always disconnect the user session to prevent leaks
-                try:
-                    await acc.disconnect()
-                except Exception:
-                    pass
+            except Exception as e:
+                logger.error(f"handle_restricted_content failed for msgid {msgid}: {e}")
+                await message.reply(f"<b>❌ Failed to process message {msgid}</b>\n<i>{e}</i>", parse_mode=enums.ParseMode.HTML)
             await asyncio.sleep(2)
+
+        # Disconnect user session ONCE after the loop
+        if acc is not None:
+            try:
+                await acc.disconnect()
+            except Exception:
+                pass
+
         batch_temp.IS_BATCH[message.from_user.id] = True
     except Exception as e:
         logger.error(f"save() crashed for user {message.from_user.id}: {e}")
         batch_temp.IS_BATCH[message.from_user.id] = True
+        # Make sure to disconnect session on crash too
+        if 'acc' in dir() and acc is not None:
+            try:
+                await acc.disconnect()
+            except Exception:
+                pass
         await message.reply(f"<b>❌ Error processing link</b>\n<i>{e}</i>", parse_mode=enums.ParseMode.HTML)
 
 
@@ -419,18 +462,21 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
    
     msg_type = get_message_type(msg)
     if not msg_type:
-        await message.reply(f"<b>⚠️ Message {msgid} has unsupported content type (sticker/gif/etc).</b>", parse_mode=enums.ParseMode.HTML)
+        await message.reply(f"<b>⚠️ Message {msgid} has unsupported content type (contact/poll/location/etc).</b>", parse_mode=enums.ParseMode.HTML)
         return
     file_size = 0
     if msg_type == "Document": file_size = msg.document.file_size
     elif msg_type == "Video": file_size = msg.video.file_size
     elif msg_type == "Audio": file_size = msg.audio.file_size
+    elif msg_type == "Animation": file_size = msg.animation.file_size
+    elif msg_type == "Voice": file_size = msg.voice.file_size
+    elif msg_type == "VideoNote": file_size = msg.video_note.file_size
+    elif msg_type == "Sticker": file_size = msg.sticker.file_size or 0
    
     if file_size > FREE_LIMIT_SIZE:
         if not await db.check_premium(message.from_user.id):
             btn = InlineKeyboardMarkup([[InlineKeyboardButton("💎 Upgrade to Premium", callback_data="buy_premium")]])
-            await client.send_message(
-                dest_chat,
+            await message.reply(
                 script.SIZE_LIMIT,
                 reply_markup=btn,
                 parse_mode=enums.ParseMode.HTML
@@ -444,13 +490,25 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
             logger.error(f"Failed to send text to {dest_chat}: {e}")
             await message.reply(f"<b>❌ Failed to send text</b>\n<i>{e}</i>", parse_mode=enums.ParseMode.HTML)
             return
+
+    # Stickers can be forwarded directly without download
+    if msg_type == "Sticker":
+        try:
+            await client.send_sticker(dest_chat, msg.sticker.file_id)
+            await db.add_traffic(message.from_user.id)
+            return
+        except Exception as e:
+            logger.error(f"Failed to send sticker to {dest_chat}: {e}")
+            # Fall through to download method
+
     await db.add_traffic(message.from_user.id)
-    smsg = await client.send_message(dest_chat, '<b>⬇️ Starting Download...</b>', parse_mode=enums.ParseMode.HTML)
+    # Send status message to USER's chat (not dump chat) so they can see progress
+    smsg = await message.reply('<b>⬇️ Starting Download...</b>', parse_mode=enums.ParseMode.HTML)
    
-    temp_dir = f"downloads/{message.id}"
+    temp_dir = f"downloads/{message.id}_{msgid}"
     if not os.path.exists(temp_dir): os.makedirs(temp_dir)
     try:
-        asyncio.create_task(downstatus(client, f'{message.id}downstatus.txt', smsg, dest_chat))
+        asyncio.create_task(downstatus(client, f'{message.id}downstatus.txt', smsg, message.chat.id))
        
         file = await acc.download_media(
             msg,
@@ -464,9 +522,11 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
         if batch_temp.IS_BATCH.get(message.from_user.id) or "Cancelled" in str(e):
             if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
             return await smsg.edit("❌ **Task Cancelled**")
-        return await smsg.delete()
+        if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
+        logger.error(f"Download failed for {chat_target}/{msgid}: {e}")
+        return await smsg.edit(f"<b>❌ Download Failed</b>\n<i>{e}</i>")
     try:
-        asyncio.create_task(upstatus(client, f'{message.id}upstatus.txt', smsg, dest_chat))
+        asyncio.create_task(upstatus(client, f'{message.id}upstatus.txt', smsg, message.chat.id))
        
         ph_path = None
         thumb_id = await db.get_thumbnail(message.from_user.id)
@@ -500,6 +560,14 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
             await client.send_audio(dest_chat, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
         elif msg_type == "Photo":
             await client.send_photo(dest_chat, file, caption=final_caption)
+        elif msg_type == "Animation":
+            await client.send_animation(dest_chat, file, caption=final_caption)
+        elif msg_type == "Voice":
+            await client.send_voice(dest_chat, file, caption=final_caption)
+        elif msg_type == "VideoNote":
+            await client.send_video_note(dest_chat, file)
+        elif msg_type == "Sticker":
+            await client.send_sticker(dest_chat, file)
        
     except Exception as e:
         logger.error(f"Upload failed to {dest_chat}: {e}")
@@ -508,7 +576,7 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
     if os.path.exists(f'{message.id}upstatus.txt'): os.remove(f'{message.id}upstatus.txt')
     if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
     try:
-        await client.delete_messages(dest_chat, [smsg.id])
+        await smsg.delete()
     except Exception:
         pass
 
