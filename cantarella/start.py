@@ -316,7 +316,11 @@ async def save(client: Client, message: Message):
                 reply_markup=btn,
                 parse_mode=enums.ParseMode.HTML
             )
-       
+
+        # Resolve destination: dump chat if set, otherwise current chat
+        dump_chat = await db.get_dump_chat(message.from_user.id)
+        dest_chat = dump_chat if dump_chat else message.chat.id
+
         if batch_temp.IS_BATCH.get(message.from_user.id) == False:
             return await message.reply_text("<b>⚠️ A Task is Currently Processing.</b>\n<i>Please wait for completion or use /cancel to stop.</i>", parse_mode=enums.ParseMode.HTML)
         datas = message.text.split("/")
@@ -339,10 +343,9 @@ async def save(client: Client, message: Message):
                 username = datas[3]
                 try:
                     await client.copy_message(
-                        chat_id=message.chat.id,
+                        chat_id=dest_chat,
                         from_chat_id=username,
-                        message_id=msgid,
-                        reply_to_message_id=message.id
+                        message_id=msgid
                     )
                     await db.add_traffic(message.from_user.id)
                     await asyncio.sleep(1)
@@ -375,13 +378,13 @@ async def save(client: Client, message: Message):
             try:
                 if is_private_link:
                     chatid = int("-100" + datas[4])
-                    await handle_restricted_content(client, acc, message, chatid, msgid)
+                    await handle_restricted_content(client, acc, message, chatid, msgid, dest_chat)
                 elif is_batch:
                     username = datas[4]
-                    await handle_restricted_content(client, acc, message, username, msgid)
+                    await handle_restricted_content(client, acc, message, username, msgid, dest_chat)
                 else:
                     username = datas[3]
-                    await handle_restricted_content(client, acc, message, username, msgid)
+                    await handle_restricted_content(client, acc, message, username, msgid, dest_chat)
             finally:
                 # Always disconnect the user session to prevent leaks
                 try:
@@ -392,7 +395,7 @@ async def save(client: Client, message: Message):
         batch_temp.IS_BATCH[message.from_user.id] = True
 
 
-async def handle_restricted_content(client: Client, acc, message: Message, chat_target, msgid):
+async def handle_restricted_content(client: Client, acc, message: Message, chat_target, msgid, dest_chat):
     try:
         msg: Message = await acc.get_messages(chat_target, msgid)
     except Exception as e:
@@ -413,7 +416,7 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
         if not await db.check_premium(message.from_user.id):
             btn = InlineKeyboardMarkup([[InlineKeyboardButton("💎 Upgrade to Premium", callback_data="buy_premium")]])
             await client.send_message(
-                message.chat.id,
+                dest_chat,
                 script.SIZE_LIMIT,
                 reply_markup=btn,
                 parse_mode=enums.ParseMode.HTML
@@ -421,17 +424,17 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
             return
     if msg_type == "Text":
         try:
-            await client.send_message(message.chat.id, msg.text, entities=msg.entities, parse_mode=enums.ParseMode.HTML)
+            await client.send_message(dest_chat, msg.text, entities=msg.entities, parse_mode=enums.ParseMode.HTML)
             return
         except Exception:
             return
     await db.add_traffic(message.from_user.id)
-    smsg = await client.send_message(message.chat.id, '<b>⬇️ Starting Download...</b>', reply_to_message_id=message.id, parse_mode=enums.ParseMode.HTML)
+    smsg = await client.send_message(dest_chat, '<b>⬇️ Starting Download...</b>', parse_mode=enums.ParseMode.HTML)
    
     temp_dir = f"downloads/{message.id}"
     if not os.path.exists(temp_dir): os.makedirs(temp_dir)
     try:
-        asyncio.create_task(downstatus(client, f'{message.id}downstatus.txt', smsg, message.chat.id))
+        asyncio.create_task(downstatus(client, f'{message.id}downstatus.txt', smsg, dest_chat))
        
         file = await acc.download_media(
             msg,
@@ -447,7 +450,7 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
             return await smsg.edit("❌ **Task Cancelled**")
         return await smsg.delete()
     try:
-        asyncio.create_task(upstatus(client, f'{message.id}upstatus.txt', smsg, message.chat.id))
+        asyncio.create_task(upstatus(client, f'{message.id}upstatus.txt', smsg, dest_chat))
        
         ph_path = None
         thumb_id = await db.get_thumbnail(message.from_user.id)
@@ -474,19 +477,19 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
             if msg.caption:
                 final_caption = msg.caption
         if msg_type == "Document":
-            await client.send_document(message.chat.id, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
+            await client.send_document(dest_chat, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
         elif msg_type == "Video":
-            await client.send_video(message.chat.id, file, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
+            await client.send_video(dest_chat, file, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
         elif msg_type == "Audio":
-            await client.send_audio(message.chat.id, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
+            await client.send_audio(dest_chat, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
         elif msg_type == "Photo":
-            await client.send_photo(message.chat.id, file, caption=final_caption)
+            await client.send_photo(dest_chat, file, caption=final_caption)
        
     except Exception as e:
          await smsg.edit(f"Upload Failed: {e}")
     if os.path.exists(f'{message.id}upstatus.txt'): os.remove(f'{message.id}upstatus.txt')
     if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
-    await client.delete_messages(message.chat.id, [smsg.id])
+    await client.delete_messages(dest_chat, [smsg.id])
 
 
 @Client.on_callback_query()
