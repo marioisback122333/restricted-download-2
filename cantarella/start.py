@@ -552,22 +552,32 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
             final_caption = ""
             if msg.caption:
                 final_caption = msg.caption
+
+        # Choose uploader: bot can only upload up to 2000 MiB
+        # For larger files, use user session (supports up to 4 GB)
+        BOT_UPLOAD_LIMIT = 2000 * 1024 * 1024  # 2000 MiB
+        if file_size > BOT_UPLOAD_LIMIT:
+            uploader = acc
+            logger.info(f"File {humanbytes(file_size)} exceeds bot limit, uploading via user session")
+        else:
+            uploader = client
+
         if msg_type == "Document":
-            await client.send_document(dest_chat, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
+            await uploader.send_document(dest_chat, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
         elif msg_type == "Video":
-            await client.send_video(dest_chat, file, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
+            await uploader.send_video(dest_chat, file, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
         elif msg_type == "Audio":
-            await client.send_audio(dest_chat, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
+            await uploader.send_audio(dest_chat, file, thumb=ph_path, caption=final_caption, progress=progress, progress_args=[message, "up"])
         elif msg_type == "Photo":
-            await client.send_photo(dest_chat, file, caption=final_caption)
+            await uploader.send_photo(dest_chat, file, caption=final_caption)
         elif msg_type == "Animation":
-            await client.send_animation(dest_chat, file, caption=final_caption)
+            await uploader.send_animation(dest_chat, file, caption=final_caption)
         elif msg_type == "Voice":
-            await client.send_voice(dest_chat, file, caption=final_caption)
+            await uploader.send_voice(dest_chat, file, caption=final_caption)
         elif msg_type == "VideoNote":
-            await client.send_video_note(dest_chat, file)
+            await uploader.send_video_note(dest_chat, file)
         elif msg_type == "Sticker":
-            await client.send_sticker(dest_chat, file)
+            await uploader.send_sticker(dest_chat, file)
        
     except Exception as e:
         logger.error(f"Upload failed to {dest_chat}: {e}")
