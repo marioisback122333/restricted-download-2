@@ -255,7 +255,7 @@ async def send_help(client: Client, message: Message):
     )
 
 
-@Client.on_message(filters.command(["plan", "myplan", "premium"]))
+@Client.on_message(filters.command(["plan"]))
 async def send_plan(client: Client, message: Message):
     buttons = [
         [InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{ADMIN_USERNAME}")],
@@ -457,12 +457,12 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
         await message.reply(f"<b>❌ Failed to fetch message {msgid}</b>\n<i>{e}</i>", parse_mode=enums.ParseMode.HTML)
         return
     if msg.empty:
-        await message.reply(f"<b>⚠️ Message {msgid} is empty or deleted.</b>", parse_mode=enums.ParseMode.HTML)
+        logger.info(f"Skipped message {msgid}: empty or deleted")
         return
    
     msg_type = get_message_type(msg)
     if not msg_type:
-        await message.reply(f"<b>⚠️ Message {msgid} has unsupported content type (contact/poll/location/etc).</b>", parse_mode=enums.ParseMode.HTML)
+        logger.info(f"Skipped message {msgid}: unsupported content type (contact/poll/location/service message)")
         return
     file_size = 0
     if msg_type == "Document": file_size = msg.document.file_size
