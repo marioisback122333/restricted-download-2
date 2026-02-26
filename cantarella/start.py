@@ -624,30 +624,48 @@ async def _do_upload(uploader, dest_chat, file, msg, msg_type, ph_path, caption,
 
 
 async def _split_and_upload(client, dest_chat, file_path, file_size, caption, message, temp_dir):
-    """Split a large file into <=1.95GB parts and upload each as a document."""
-    PART_SIZE = 1950 * 1024 * 1024  # 1950 MiB per part (safe margin under 2000)
+    """Split a large file into <=1.95GB parts and upload each."""
+    PART_SIZE = 1950 * 1024 * 1024  # 1950 MiB per part
     filename = os.path.basename(file_path)
     name, ext = os.path.splitext(filename)
     
-    # Try ffmpeg split for videos first (produces playable parts)
-    if ext.lower() in ('.mp4', '.mkv', '.avi', '.mov', '.webm'):
-        try:
-            parts = await _ffmpeg_split(file_path, temp_dir, PART_SIZE)
-            if parts:
-                total = len(parts)
-                for i, part_path in enumerate(parts, 1):
-                    part_caption = f"{caption}\n\n📦 <b>Part {i}/{total}</b>" if caption else f"📦 <b>Part {i}/{total}</b>"
+    is_video = ext.lower() in ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.ts')
+    
+    if is_video:
+        # For videos: use ffmpeg to produce streamable segments
+        parts = await _ffmpeg_split_video(file_path, temp_dir, PART_SIZE)
+        if parts:
+            total = len(parts)
+            for i, part_path in enumerate(parts, 1):
+                part_caption = f"{caption}\n\n📦 <b>Part {i}/{total}</b>" if caption else f"📦 <b>Part {i}/{total}</b>"
+                try:
                     await client.send_video(
                         dest_chat, part_path,
                         caption=part_caption,
+                        parse_mode=enums.ParseMode.HTML,
+                        supports_streaming=True,
                         progress=progress, progress_args=[message, "up"]
                     )
-                    await asyncio.sleep(1)
-                return
-        except Exception as e:
-            logger.warning(f"ffmpeg split failed, falling back to binary split: {e}")
-
-    # Binary split fallback (works for any file type)
+                except Exception as e:
+                    # If send_video fails (e.g. codec issue), try as document
+                    logger.warning(f"send_video failed for part {i}, trying as document: {e}")
+                    await client.send_document(
+                        dest_chat, part_path,
+                        caption=part_caption,
+                        parse_mode=enums.ParseMode.HTML,
+                        progress=progress, progress_args=[message, "up"]
+                    )
+                # Clean up part after upload to save disk
+                try:
+                    os.remove(part_path)
+                except Exception:
+                    pass
+                await asyncio.sleep(2)
+            return
+        else:
+            logger.warning("ffmpeg split returned no parts, falling back to binary split")
+    
+    # Binary split fallback (for non-video files or if ffmpeg fails)
     part_num = 0
     total_parts = math.ceil(file_size / PART_SIZE)
     
@@ -667,61 +685,97 @@ async def _split_and_upload(client, dest_chat, file_path, file_size, caption, me
             await client.send_document(
                 dest_chat, part_path,
                 caption=part_caption,
+                parse_mode=enums.ParseMode.HTML,
                 progress=progress, progress_args=[message, "up"]
             )
-            # Clean up part immediately to save disk
             os.remove(part_path)
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
 
 
-async def _ffmpeg_split(file_path, temp_dir, part_size):
-    """Try to split a video into parts using ffmpeg (if available)."""
+async def _ffmpeg_split_video(file_path, temp_dir, part_size):
+    """Split a video into streamable segments using ffmpeg.
+    
+    Each output segment is a complete, playable .mp4 file with proper
+    headers — can be streamed directly in Telegram.
+    """
     # Check if ffmpeg is available
     try:
-        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
+        proc = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-version',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await proc.wait()
+        if proc.returncode != 0:
+            logger.warning("ffmpeg not available")
+            return None
+    except FileNotFoundError:
+        logger.warning("ffmpeg not found on system")
         return None
     
     filename = os.path.basename(file_path)
-    name, ext = os.path.splitext(filename)
+    name, _ = os.path.splitext(filename)
     
-    # Get video duration
-    result = subprocess.run(
-        ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
-         '-of', 'default=noprint_wrappers=1:nokey=1', file_path],
-        capture_output=True, text=True
-    )
-    total_duration = float(result.stdout.strip())
+    # Get video duration using ffprobe
+    try:
+        probe = await asyncio.create_subprocess_exec(
+            'ffprobe', '-v', 'quiet',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await probe.communicate()
+        total_duration = float(stdout.decode().strip())
+    except Exception as e:
+        logger.error(f"ffprobe failed: {e}")
+        return None
+    
     total_size = os.path.getsize(file_path)
     
-    # Calculate segment duration based on target part size
+    # Calculate how many parts we need and the duration per segment
     num_parts = math.ceil(total_size / part_size)
     segment_duration = int(total_duration / num_parts)
-    if segment_duration < 10:
-        return None  # Too many parts, fall back to binary
     
-    # Split using ffmpeg segment muxer
-    output_pattern = os.path.join(temp_dir, f"{name}_part%03d{ext}")
+    if segment_duration < 10:
+        logger.warning(f"Segment duration too short ({segment_duration}s), aborting ffmpeg split")
+        return None
+    
+    logger.info(f"Splitting {humanbytes(total_size)} video ({int(total_duration)}s) into ~{num_parts} parts of ~{segment_duration}s each")
+    
+    # Split using ffmpeg segment muxer — outputs proper .mp4 files
+    output_pattern = os.path.join(temp_dir, f"{name}_part%03d.mp4")
     proc = await asyncio.create_subprocess_exec(
         'ffmpeg', '-i', file_path,
-        '-c', 'copy', '-map', '0',
+        '-c', 'copy',           # No re-encoding (fast, lossless)
+        '-map', '0',            # Include all streams (video + audio)
         '-segment_time', str(segment_duration),
-        '-f', 'segment', '-reset_timestamps', '1',
+        '-f', 'segment',
+        '-reset_timestamps', '1',  # Reset timestamps for each segment
+        '-movflags', '+faststart',  # Enable streaming (moov atom at start)
         output_pattern,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
-    await proc.wait()
+    _, stderr = await proc.communicate()
     
     if proc.returncode != 0:
+        logger.error(f"ffmpeg split failed (exit {proc.returncode}): {stderr.decode()[-500:]}")
         return None
     
-    # Collect output files
+    # Collect output files sorted by name
     parts = sorted([
         os.path.join(temp_dir, f) for f in os.listdir(temp_dir)
-        if f.startswith(f"{name}_part") and f.endswith(ext)
+        if f.startswith(f"{name}_part") and f.endswith('.mp4')
     ])
-    return parts if parts else None
+    
+    if not parts:
+        logger.error("ffmpeg produced no output files")
+        return None
+    
+    logger.info(f"ffmpeg split produced {len(parts)} streamable segments")
+    return parts
 
 
 @Client.on_callback_query()
