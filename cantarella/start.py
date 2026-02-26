@@ -467,12 +467,12 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
         logger.info(f"Skipped message {msgid}: unsupported content type (contact/poll/location/service message)")
         return
     file_size = 0
-    if msg_type == "Document": file_size = msg.document.file_size
-    elif msg_type == "Video": file_size = msg.video.file_size
-    elif msg_type == "Audio": file_size = msg.audio.file_size
-    elif msg_type == "Animation": file_size = msg.animation.file_size
-    elif msg_type == "Voice": file_size = msg.voice.file_size
-    elif msg_type == "VideoNote": file_size = msg.video_note.file_size
+    if msg_type == "Document": file_size = msg.document.file_size or 0
+    elif msg_type == "Video": file_size = msg.video.file_size or 0
+    elif msg_type == "Audio": file_size = msg.audio.file_size or 0
+    elif msg_type == "Animation": file_size = msg.animation.file_size or 0
+    elif msg_type == "Voice": file_size = msg.voice.file_size or 0
+    elif msg_type == "VideoNote": file_size = msg.video_note.file_size or 0
     elif msg_type == "Sticker": file_size = msg.sticker.file_size or 0
    
     if file_size > FREE_LIMIT_SIZE:
@@ -527,6 +527,14 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
         if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
         logger.error(f"Download failed for {chat_target}/{msgid}: {e}")
         return await smsg.edit(f"<b>❌ Download Failed</b>\n<i>{e}</i>")
+
+    # Critical: download_media can return None silently
+    if not file or not os.path.exists(file):
+        logger.error(f"Download returned None or file missing for {chat_target}/{msgid}")
+        if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
+        await smsg.edit("<b>❌ Download Failed</b>\n<i>File could not be downloaded (media may be unavailable or too large for download).</i>")
+        return
+
     try:
         asyncio.create_task(upstatus(client, f'{message.id}upstatus.txt', smsg, message.chat.id))
        
@@ -555,39 +563,38 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
             if msg.caption:
                 final_caption = msg.caption
 
-        # Smart upload: bot limit is 2000 MiB, user session limit depends on TG Premium
-        BOT_UPLOAD_LIMIT = 2000 * 1024 * 1024  # 2000 MiB
-        upload_success = False
+        # Use ACTUAL file size on disk for upload decision (metadata can be wrong)
+        actual_size = os.path.getsize(file) if (file and os.path.exists(file)) else file_size
+        SAFE_BOT_LIMIT = 1950 * 1024 * 1024  # 1950 MiB (safe margin under Telegram's 2000 MiB limit)
+        logger.info(f"Upload decision: metadata_size={humanbytes(file_size)}, actual_size={humanbytes(actual_size)}, limit={humanbytes(SAFE_BOT_LIMIT)}")
 
-        if file_size <= BOT_UPLOAD_LIMIT:
-            # Small file — bot can handle it directly
-            await _do_upload(client, dest_chat, file, msg, msg_type, ph_path, final_caption, message)
-            upload_success = True
-        else:
-            # Large file — try user session first (works if user has TG Premium)
+        if actual_size <= SAFE_BOT_LIMIT:
+            # File fits within bot limit — upload directly, fall back to split if it fails
             try:
-                logger.info(f"File {humanbytes(file_size)} exceeds bot limit, trying user session upload")
+                await _do_upload(client, dest_chat, file, msg, msg_type, ph_path, final_caption, message)
+            except Exception as bot_err:
+                logger.warning(f"Bot upload failed ({type(bot_err).__name__}): {bot_err}, falling back to split")
+                await smsg.edit("<b>📦 Upload failed, splitting file into parts...</b>")
+                await _split_and_upload(client, dest_chat, file, actual_size, final_caption, message, temp_dir)
+        else:
+            # File exceeds bot limit — try user session, then split
+            uploaded = False
+            try:
+                logger.info(f"File {humanbytes(actual_size)} exceeds bot limit, trying user session")
                 await _do_upload(acc, dest_chat, file, msg, msg_type, ph_path, final_caption, message)
-                upload_success = True
-            except Exception as upload_err:
-                err_str = str(upload_err)
-                logger.warning(f"User session upload failed: {err_str}")
-                # If user session also can't handle it, split the file
-                if "2000" in err_str or "bigger" in err_str.lower() or "premium" in err_str.lower():
-                    await smsg.edit("<b>📦 File too large for single upload. Splitting into parts...</b>")
-                    try:
-                        await _split_and_upload(client, dest_chat, file, file_size, final_caption, message, temp_dir)
-                        upload_success = True
-                    except Exception as split_err:
-                        logger.error(f"Split upload failed: {split_err}")
-                        raise split_err
-                else:
-                    raise upload_err
+                uploaded = True
+            except Exception as acc_err:
+                logger.warning(f"User session upload failed ({type(acc_err).__name__}): {acc_err}")
+
+            if not uploaded:
+                await smsg.edit("<b>📦 File too large for single upload. Splitting into parts...</b>")
+                await _split_and_upload(client, dest_chat, file, actual_size, final_caption, message, temp_dir)
        
     except Exception as e:
-        logger.error(f"Upload failed to {dest_chat}: {e}")
-        await smsg.edit(f"<b>❌ Upload Failed</b>\n<i>{e}</i>")
-        await message.reply(f"<b>❌ Failed to upload to destination</b>\n<i>{e}</i>\n\n<i>Make sure the bot is an admin of the dump chat.</i>", parse_mode=enums.ParseMode.HTML)
+        logger.error(f"Upload failed to {dest_chat} ({type(e).__name__}): {repr(e)}")
+        err_text = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+        await smsg.edit(f"<b>❌ Upload Failed</b>\n<i>{err_text}</i>")
+        await message.reply(f"<b>❌ Failed to upload to destination</b>\n<i>{err_text}</i>\n\n<i>Make sure the bot is an admin of the dump chat.</i>", parse_mode=enums.ParseMode.HTML)
     if os.path.exists(f'{message.id}upstatus.txt'): os.remove(f'{message.id}upstatus.txt')
     if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
     try:
