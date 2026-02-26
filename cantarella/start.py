@@ -1,5 +1,6 @@
 import os
 import asyncio
+import html as html_mod
 import random
 import time
 import shutil
@@ -577,24 +578,24 @@ async def handle_restricted_content(client: Client, acc, message: Message, chat_
                 await smsg.edit("<b>📦 Upload failed, splitting file into parts...</b>")
                 await _split_and_upload(client, dest_chat, file, actual_size, final_caption, message, temp_dir)
         else:
-            # File exceeds bot limit — try user session, then split
-            uploaded = False
-            try:
-                logger.info(f"File {humanbytes(actual_size)} exceeds bot limit, trying user session")
-                await _do_upload(acc, dest_chat, file, msg, msg_type, ph_path, final_caption, message)
-                uploaded = True
-            except Exception as acc_err:
-                logger.warning(f"User session upload failed ({type(acc_err).__name__}): {acc_err}")
-
-            if not uploaded:
-                await smsg.edit("<b>📦 File too large for single upload. Splitting into parts...</b>")
-                await _split_and_upload(client, dest_chat, file, actual_size, final_caption, message, temp_dir)
+            # File exceeds bot limit — split into parts and upload via bot
+            # (User session uploads are unreliable in Docker due to MTProto connection timeouts)
+            logger.info(f"File {humanbytes(actual_size)} exceeds bot limit, splitting into parts")
+            await smsg.edit("<b>📦 File too large for single upload. Splitting into parts...</b>")
+            await _split_and_upload(client, dest_chat, file, actual_size, final_caption, message, temp_dir)
        
     except Exception as e:
         logger.error(f"Upload failed to {dest_chat} ({type(e).__name__}): {repr(e)}")
-        err_text = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
-        await smsg.edit(f"<b>❌ Upload Failed</b>\n<i>{err_text}</i>")
-        await message.reply(f"<b>❌ Failed to upload to destination</b>\n<i>{err_text}</i>\n\n<i>Make sure the bot is an admin of the dump chat.</i>", parse_mode=enums.ParseMode.HTML)
+        raw_err = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+        safe_err = html_mod.escape(raw_err)  # Escape < > & so they show in Telegram
+        try:
+            await smsg.edit(f"<b>❌ Upload Failed</b>\n<i>{safe_err}</i>", parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            await smsg.edit(f"❌ Upload Failed\n{raw_err}")
+        try:
+            await message.reply(f"<b>❌ Failed to upload to destination</b>\n<i>{safe_err}</i>\n\n<i>Make sure the bot is an admin of the dump chat.</i>", parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            await message.reply(f"❌ Failed to upload to destination\n{raw_err}\n\nMake sure the bot is an admin of the dump chat.")
     if os.path.exists(f'{message.id}upstatus.txt'): os.remove(f'{message.id}upstatus.txt')
     if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
     try:
